@@ -378,6 +378,23 @@
   }
   .lock-screen .pz-btn-row{ margin-top: 4px; }
 
+  /* ---------- Trap DC display (two-column: investigate / disarm) ---------- */
+  .trap-dc-row{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 10px 0 6px;
+  }
+  .trap-dc-block{
+    background: var(--parchment);
+    border: 1px solid #c9b988;
+    border-radius: 2px;
+    padding: 8px 10px;
+    text-align: center;
+  }
+  .trap-dc-block .lock-dc-label{ font-size: 16px; margin-bottom: 3px; }
+  .trap-dc-block .stage-sub{ display: block; }
+
   /* ---------- NPC dossier card (remapped to parchment palette) ---------- */
   .npc-card{
     margin-top: 6px;
@@ -549,6 +566,12 @@
     color: #f6e9d4;
   }
   .pz-btn-primary:hover{ filter: brightness(1.08); }
+  .pz-btn-danger{
+    background: var(--danger);
+    border-color: #5c1e12;
+    color: #f6e9d4;
+  }
+  .pz-btn-danger:hover{ filter: brightness(1.08); }
   .pz-seq-slots{ display: flex; gap: 8px; justify-content: center; margin-bottom: 14px; }
   .pz-seq-slot{
     width: 44px; height: 44px;
@@ -3153,9 +3176,29 @@ window.Orchestrator = (function(){
     }
 
     // TRAP — reuse a trap marker MapGen already rolled for this room, if any.
+    // Two DCs are generated immediately: one for Investigation (to find the
+    // trap before it fires) and one for Sleight of Hand (to disarm it).
+    // Both use the same formula as every other lock/check in the dungeon,
+    // randomised within the room's own trap CR so a trap's difficulty scales
+    // with how dangerous it would be if triggered.
     const trapMarker = existingMarkers.find(m => m.type === 'trap');
     if (trapMarker) {
-      stages.trap = { kind: 'trap', marker: trapMarker, triggered: null };
+      const trapCR = trapMarker.cr || 1;
+      let investigateDC = 10 + Math.floor(trapCR / 2);
+      if (investigateDC < 11) investigateDC = 11;
+      if (investigateDC > 22) investigateDC = 22;
+      let disarmDC = 10 + Math.floor(trapCR / 2);
+      if (disarmDC < 11) disarmDC = 11;
+      if (disarmDC > 22) disarmDC = 22;
+      // Add a small random offset so the two DCs aren't always identical
+      disarmDC = Math.max(11, Math.min(22, disarmDC + Math.floor(Math.random() * 3) - 1));
+      stages.trap = {
+        kind: 'trap',
+        marker: trapMarker,
+        investigateDC,
+        disarmDC,
+        outcome: null  // null = pending, 'triggered' | 'disabled' = resolved
+      };
     }
 
     // HOSTILE — monsters MapGen already placed, and/or a hostile NPC.
@@ -3264,11 +3307,8 @@ window.Orchestrator = (function(){
     // stages with no interactive resolution auto-resolve on reveal
     if (key === 'door') {
       // resolved when the embedded puzzle is solved (handled by caller)
-    } else if (key === 'trap') {
-      st.stages.trap.triggered = Math.random() < 0.5; // 50/50 the trap actually fires
-      st.resolved.trap = true; // "resolved" = revealed/rolled; DM narrates outcome
     } else {
-      // hostile / rescue / loot resolve via explicit DM action (markResolved/pickLock/failLock)
+      // trap / hostile / rescue / loot all resolve via explicit DM action
     }
     return key;
   }
@@ -3284,6 +3324,15 @@ window.Orchestrator = (function(){
     if (!st) return false;
     const idx = st.keys.indexOf(key);
     return idx !== -1 && idx < st.revealedCount;
+  }
+
+  // Marks the trap outcome as 'triggered' or 'disabled'. Either way the
+  // trap's details are shown — this just affects the status label the DM sees.
+  function resolveTrap(roomId, outcome){
+    const st = getRoomState(roomId);
+    if (!st || !st.stages.trap) return;
+    st.stages.trap.outcome = outcome;
+    st.resolved.trap = true;
   }
 
   // Marks a chest/rescue lock as successfully picked: its contents (items,
@@ -3312,6 +3361,7 @@ window.Orchestrator = (function(){
     advance,
     markResolved,
     isRevealed,
+    resolveTrap,
     pickLock,
     failLock,
     STAGE_ORDER
@@ -3415,14 +3465,46 @@ window.Orchestrator = (function(){
 
     if (key === 'trap'){
       const t = stageData.marker;
-      const triggered = stageData.triggered;
+      const outcome = stageData.outcome;
+
+      // After the DM picks an outcome the trap is fully resolved — show
+      // status + what it was going to do, whether triggered or disabled.
+      if (outcome) {
+        const statusClass = outcome === 'triggered' ? 'stage-status-danger' : 'stage-status-cleared';
+        const statusLabel = outcome === 'triggered' ? 'Triggered!' : 'Disabled';
+        wrap.innerHTML = `
+          <div class="stage-head">
+            <span class="stage-tag stage-tag-danger">Trap</span>
+            <span class="stage-status ${statusClass}">${statusLabel}</span>
+          </div>
+          <div class="stage-line"><strong>${t.name}</strong> <span class="stage-sub">CR ${window.MapGen.formatCR(t.cr)}</span></div>
+          <div class="stage-desc">${t.description}</div>
+        `;
+        return wrap;
+      }
+
+      // Pending — show both DCs and let the DM decide the outcome.
       wrap.innerHTML = `
         <div class="stage-head">
           <span class="stage-tag stage-tag-danger">Trap</span>
-          <span class="stage-status ${triggered ? 'stage-status-danger' : 'stage-status-cleared'}">${triggered ? 'Triggered!' : 'Did not trigger'}</span>
+          <span class="stage-status">Detected</span>
         </div>
         <div class="stage-line"><strong>${t.name}</strong> <span class="stage-sub">CR ${window.MapGen.formatCR(t.cr)}</span></div>
+        <div class="trap-dc-row">
+          <div class="trap-dc-block">
+            <div class="lock-dc-label">Investigation DC ${stageData.investigateDC}</div>
+            <div class="stage-sub">to find the trap</div>
+          </div>
+          <div class="trap-dc-block">
+            <div class="lock-dc-label">Sleight of Hand DC ${stageData.disarmDC}</div>
+            <div class="stage-sub">to disarm the trap</div>
+          </div>
+        </div>
         <div class="stage-desc">${t.description}</div>
+        <div class="pz-btn-row" style="margin-top:12px;">
+          <button class="pz-btn pz-btn-danger trap-outcome-btn" data-room="${roomId}" data-outcome="triggered">Mark Triggered</button>
+          <button class="pz-btn pz-btn-primary trap-outcome-btn" data-room="${roomId}" data-outcome="disabled">Mark Disabled</button>
+        </div>
       `;
       return wrap;
     }
@@ -3568,6 +3650,14 @@ window.Orchestrator = (function(){
     roomLogEl.querySelectorAll('.stage-resolve-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         window.Orchestrator.markResolved(btn.dataset.room, btn.dataset.key);
+        refreshRoomLog(roomId);
+        window.MapGen.redraw(window.Orchestrator.roomStatus);
+      });
+    });
+
+    roomLogEl.querySelectorAll('.trap-outcome-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        window.Orchestrator.resolveTrap(btn.dataset.room, btn.dataset.outcome);
         refreshRoomLog(roomId);
         window.MapGen.redraw(window.Orchestrator.roomStatus);
       });
