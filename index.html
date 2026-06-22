@@ -356,6 +356,28 @@
   .stage-desc{ font-size: 14.5px; font-style: italic; color: var(--ink-soft); line-height: 1.5; margin-top: 4px; }
   .stage-resolve-btn{ margin-top: 10px; width: auto; padding: 8px 16px; font-size: 13px; }
 
+  /* ---------- Lock screen (chest / rescue sleight-of-hand DC) ---------- */
+  .lock-screen{
+    text-align: center;
+    padding: 6px 4px 2px;
+  }
+  .lock-dc-label{
+    font-family: 'Cormorant SC', serif;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-size: 19px;
+    color: var(--copper-dark);
+    margin-bottom: 6px;
+  }
+  .lock-screen .stage-sub{
+    display: block;
+    margin-bottom: 10px;
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 14px;
+  }
+  .lock-screen .pz-btn-row{ margin-top: 4px; }
+
   /* ---------- NPC dossier card (remapped to parchment palette) ---------- */
   .npc-card{
     margin-top: 6px;
@@ -635,11 +657,6 @@
     <div class="field">
       <label for="rarityMaxRange">Maximum Rarity <span class="val" id="rarityMaxVal">Rare</span></label>
       <input type="range" id="rarityMaxRange" min="0" max="5" value="2">
-    </div>
-
-    <div class="field">
-      <label for="itemFreqRange">Item Frequency <span class="val" id="itemFreqVal">2</span></label>
-      <input type="range" id="itemFreqRange" min="0" max="9" value="2">
     </div>
 
     <div class="field">
@@ -959,7 +976,7 @@
   }
 
   function buildDungeon(opts){
-    const { roomCount, sizeTier, windiness, loopiness, crMin, crMax, monsterFrequency, rarityMin, rarityMax, itemFrequency, trapFrequency } = opts;
+    const { roomCount, sizeTier, windiness, loopiness, crMin, crMax, monsterFrequency, rarityMin, rarityMax, trapFrequency } = opts;
     const profile = THEME;
 
     const sizeRanges = { 1: [2,3], 2: [3,5], 3: [4,7] };
@@ -1151,20 +1168,6 @@
       });
     }
 
-    const itemPool = MAGIC_ITEM_DATA.filter(m => m[1] >= rarityMin && m[1] <= rarityMax);
-    const itemRooms = new Set();
-    const itemProb = itemFrequency / 9;
-    if (itemPool.length && itemFrequency > 0){
-      rooms.forEach(r => {
-        if (r.role === 'entrance' || r.role === 'exit') return;
-        if (rand() < itemProb){
-          const pick = choice(itemPool);
-          markers.push({ type:'item', room: r, name: pick[0], rarity: pick[1] });
-          itemRooms.add(r.id);
-        }
-      });
-    }
-
     const trapPool = TRAP_DATA.filter(t => t[1] >= crMin && t[1] <= crMax);
     const trapProb = (trapFrequency || 0) / 9;
     rooms.forEach(r => {
@@ -1178,7 +1181,7 @@
     return {
       rooms, corridorPaths, corridorCells, roomCells, doors, markers, profile,
       cols: COLS, rows: ROWS, cell, W, H, offX, offY,
-      crMin, crMax
+      crMin, crMax, rarityMin, rarityMax
     };
   }
 
@@ -1479,8 +1482,6 @@
   const rarityMinVal = document.getElementById('rarityMinVal');
   const rarityMaxRange = document.getElementById('rarityMaxRange');
   const rarityMaxVal = document.getElementById('rarityMaxVal');
-  const itemFreqRange = document.getElementById('itemFreqRange');
-  const itemFreqVal = document.getElementById('itemFreqVal');
   const seedInput = document.getElementById('seedInput');
   const seedLine = document.getElementById('seedLine');
   const dungeonName = document.getElementById('dungeonName');
@@ -1533,8 +1534,19 @@
     if (parseInt(rarityMaxRange.value,10) < parseInt(rarityMinRange.value,10)) rarityMinRange.value = rarityMaxRange.value;
     updateRarityLabels();
   });
-  itemFreqRange.addEventListener('input', () => itemFreqVal.textContent = itemFreqRange.value);
   updateRarityLabels();
+
+  // The puzzle/hostile-NPC/rescue-NPC/loot frequency sliders are read by
+  // orchestrator.js (they don't feed buildDungeon directly), but their
+  // value labels still need the same live-update wiring every other
+  // frequency slider on this panel gets.
+  ['puzzleFreqRange', 'hostileNpcFreqRange', 'rescueNpcFreqRange', 'lootFreqRange'].forEach(id => {
+    const rangeEl = document.getElementById(id);
+    const valEl = document.getElementById(id.replace('Range', 'Val'));
+    if (rangeEl && valEl) {
+      rangeEl.addEventListener('input', () => valEl.textContent = rangeEl.value);
+    }
+  });
 
   let currentDungeon = null;
   let currentSeedStr = '';
@@ -1578,7 +1590,6 @@
       crMin, crMax,
       monsterFrequency: parseInt(monsterFreqRange.value,10),
       rarityMin, rarityMax,
-      itemFrequency: parseInt(itemFreqRange.value,10),
       trapFrequency: parseInt(trapFreqRange.value,10)
     });
     currentDungeon = dungeon;
@@ -1701,6 +1712,7 @@
     getDungeon: () => currentDungeon,
     formatCR,
     formatRarity,
+    magicItemPool: (rarityMin, rarityMax) => MAGIC_ITEM_DATA.filter(m => m[1] >= rarityMin && m[1] <= rarityMax),
     onRoomClick: null // set by the orchestrator
   };
 
@@ -3048,23 +3060,6 @@ window.Orchestrator = (function(){
   let roomState = new Map();
   let dungeon = null;
 
-  const LOOT_TABLE = [
-    'A small chest of mixed coin — {gp} gp.',
-    'A locked iron strongbox containing a folded map and {gp} gp.',
-    'A velvet pouch of gemstones worth roughly {gp} gp.',
-    'A traveler\'s pack with rations, a coil of rope, and {gp} gp tucked in a hidden seam.',
-    'An ornate reliquary holding {gp} gp in antique coin.',
-    'A weapons rack — mostly ruined, but {gp} gp worth of fittings can be salvaged.',
-    'A scholar\'s satchel of annotated notes and {gp} gp.',
-    'A sealed urn of ashes, with {gp} gp wedged beneath it.'
-  ];
-
-  function rollLoot(){
-    const gp = (10 + Math.floor(Math.random()*40)) * (1 + Math.floor(Math.random()*4));
-    const line = LOOT_TABLE[Math.floor(Math.random()*LOOT_TABLE.length)];
-    return line.replace('{gp}', gp);
-  }
-
   // ---- Frequencies (0-9 sliders, same convention as map generator) ----
   function getFreq(id){
     const el = document.getElementById(id);
@@ -3083,6 +3078,67 @@ window.Orchestrator = (function(){
     const lo = Math.min(crMin, crMax);
     const hi = Math.max(crMin, crMax);
     return lo + Math.random() * (hi - lo);
+  }
+
+  // Sleight-of-hand lock DC, shared by treasure chests and rescue-NPC cells
+  // so both feel like the same kind of lock. Randomized within the
+  // dungeon's overall CR range (not pinned to a single fixed CR), using the
+  // same DC formula the trap table already uses for consistency: a CR of 1
+  // gives DC 11, rising roughly 1 DC per 2 CR, clamped to a sane 11-22 band.
+  function rollLockDC(crMin, crMax){
+    const cr = Math.max(0, Math.round(randomCRInRange(crMin, crMax) ?? 1));
+    let dc = 10 + Math.floor(cr / 2);
+    if (dc < 11) dc = 11;
+    if (dc > 22) dc = 22;
+    return dc;
+  }
+
+  // ---- Treasure chest contents ----
+  // One of three outcomes, decided per chest:
+  //  - a single item at the dungeon's maximum available rarity
+  //  - two items at a randomized lower rarity (only possible if the rarity
+  //    range actually spans more than one tier)
+  //  - a pile of CR-appropriate gold instead of a magic item at all
+  function rollChestContents(rarityMin, rarityMax, crMin, crMax){
+    const lo = Math.min(rarityMin, rarityMax);
+    const hi = Math.max(rarityMin, rarityMax);
+    const pool = window.MapGen.magicItemPool(lo, hi);
+
+    // Roughly a third of the time, skip the magic item entirely and award
+    // gold scaled to the dungeon's CR range instead.
+    if (!pool.length || Math.random() < (1/3)) {
+      const cr = Math.max(0, randomCRInRange(crMin, crMax) ?? 1);
+      const gp = Math.max(5, Math.round((10 + cr * 18) * (0.7 + Math.random() * 0.6)));
+      return { type: 'gold', gp };
+    }
+
+    const topRarity = Math.max(...pool.map(p => p[1]));
+    const lowerTiers = pool.filter(p => p[1] < topRarity);
+
+    // Two lower-rarity items only makes sense if a lower tier actually
+    // exists within the selected range; otherwise fall back to the single
+    // top-rarity item.
+    if (lowerTiers.length && Math.random() < 0.5) {
+      const tierValue = lowerTiers[Math.floor(Math.random() * lowerTiers.length)][1];
+      const tierPool = lowerTiers.filter(p => p[1] === tierValue);
+      const first = tierPool[Math.floor(Math.random() * tierPool.length)];
+      let second = tierPool[Math.floor(Math.random() * tierPool.length)];
+      // prefer a distinct second item when the tier has more than one option
+      if (tierPool.length > 1) {
+        let guard = 0;
+        while (second[0] === first[0] && guard++ < 10) {
+          second = tierPool[Math.floor(Math.random() * tierPool.length)];
+        }
+      }
+      return { type: 'items', items: [
+        { name: first[0], rarity: first[1] },
+        { name: second[0], rarity: second[1] }
+      ]};
+    }
+
+    const topTierPool = pool.filter(p => p[1] === topRarity);
+    const pick = topTierPool[Math.floor(Math.random() * topTierPool.length)];
+    return { type: 'item', items: [{ name: pick[0], rarity: pick[1] }] };
   }
 
   // ---- Build the pipeline for a single room ----
@@ -3120,22 +3176,37 @@ window.Orchestrator = (function(){
       };
     }
 
-    // RESCUE — only possible if there was a hostile encounter to clear first.
-    // Matched to the dungeon's overall CR range so a rescued NPC stays
-    // consistent with the rest of the dungeon's power level.
+    // RESCUE — only possible if there was a hostile encounter to clear
+    // first. The captive is locked in (a cell, a cage) and that lock has to
+    // be picked — same sleight-of-hand DC mechanic, and same DC formula, as
+    // a treasure chest — before the DM sees who's inside. A rescued
+    // captive's CR is intentionally independent of the hostile NPC's CR
+    // (and of the dungeon's overall CR range): always a random value
+    // between CR 1/8 and CR 1, since a prisoner is a weak, mundane
+    // background NPC rather than a peer of whatever's guarding them.
     if (stages.hostile && rollFreq(opts.rescueNpcFreq)) {
-      const rescueCR = randomCRInRange(opts.crMin, opts.crMax);
-      stages.rescue = { kind: 'rescue', npc: window.NpcGen.build({ disposition: 'friendly', crNumeric: rescueCR }) };
+      const rescueCR = 0.125 + Math.random() * (1 - 0.125);
+      stages.rescue = {
+        kind: 'rescue',
+        npc: window.NpcGen.build({ disposition: 'friendly', crNumeric: rescueCR }),
+        lockDC: rollLockDC(opts.crMin, opts.crMax),
+        lockPicked: false,
+        lockFailed: false
+      };
     }
 
-    // LOOT — reuse an item marker if MapGen placed one, and/or roll a chest.
-    const itemMarker = existingMarkers.find(m => m.type === 'item');
-    const includeChest = rollFreq(opts.lootFreq);
-    if (itemMarker || includeChest) {
+    // LOOT — a locked chest, gated behind the same sleight-of-hand DC
+    // mechanic as a rescue cell. Contains items and/or gold, generated by
+    // rollChestContents from the dungeon's rarity range — this is the only
+    // source of loot now, so Treasure Chest Frequency is the single dial
+    // for "does this room have anything worth taking."
+    if (rollFreq(opts.lootFreq)) {
       stages.loot = {
         kind: 'loot',
-        item: itemMarker || null,
-        chest: includeChest ? rollLoot() : null
+        contents: rollChestContents(opts.rarityMin, opts.rarityMax, opts.crMin, opts.crMax),
+        lockDC: rollLockDC(opts.crMin, opts.crMax),
+        lockPicked: false,
+        lockFailed: false
       };
     }
 
@@ -3159,7 +3230,9 @@ window.Orchestrator = (function(){
       rescueNpcFreq: getFreq('rescueNpcFreqRange'),
       lootFreq: getFreq('lootFreqRange'),
       crMin: d.crMin,
-      crMax: d.crMax
+      crMax: d.crMax,
+      rarityMin: d.rarityMin,
+      rarityMax: d.rarityMax
     };
     d.rooms.forEach(room => {
       const markers = d.markers.filter(m => m.room.id === room.id);
@@ -3195,7 +3268,7 @@ window.Orchestrator = (function(){
       st.stages.trap.triggered = Math.random() < 0.5; // 50/50 the trap actually fires
       st.resolved.trap = true; // "resolved" = revealed/rolled; DM narrates outcome
     } else {
-      // hostile / rescue / loot resolve via explicit DM action (markResolved)
+      // hostile / rescue / loot resolve via explicit DM action (markResolved/pickLock/failLock)
     }
     return key;
   }
@@ -3213,6 +3286,25 @@ window.Orchestrator = (function(){
     return idx !== -1 && idx < st.revealedCount;
   }
 
+  // Marks a chest/rescue lock as successfully picked: its contents (items,
+  // gold, or the rescued NPC) become visible, and the stage is resolved.
+  function pickLock(roomId, key){
+    const st = getRoomState(roomId);
+    if (!st || !st.stages[key]) return;
+    st.stages[key].lockPicked = true;
+    st.resolved[key] = true;
+  }
+
+  // Marks a chest/rescue lock as failed: contents stay hidden — the DM
+  // narrates the failed attempt and moves on — but the stage still counts
+  // as resolved so the room can progress/clear normally.
+  function failLock(roomId, key){
+    const st = getRoomState(roomId);
+    if (!st || !st.stages[key]) return;
+    st.stages[key].lockFailed = true;
+    st.resolved[key] = true;
+  }
+
   return {
     buildAllPipelines,
     getRoomState,
@@ -3220,6 +3312,8 @@ window.Orchestrator = (function(){
     advance,
     markResolved,
     isRevealed,
+    pickLock,
+    failLock,
     STAGE_ORDER
   };
 })();
@@ -3262,6 +3356,32 @@ window.Orchestrator = (function(){
     const total = monsters.reduce((s,m) => s + m.cr, 0);
     const list = monsters.map(m => `${m.name} (CR ${window.MapGen.formatCR(m.cr)})`).join(', ');
     return `<div class="stage-line"><strong>Monsters:</strong> ${list} <span class="stage-sub">— Total CR ${window.MapGen.formatCR(total)}</span></div>`;
+  }
+
+  function chestContentsHTML(contents){
+    if (contents.type === 'gold'){
+      return `<div class="stage-line">${contents.gp} gp in coin.</div>`;
+    }
+    const items = contents.items.map(it =>
+      `<div class="stage-line">${it.name} <span class="stage-sub">(${window.MapGen.formatRarity(it.rarity)})</span></div>`
+    ).join('');
+    return items;
+  }
+
+  // Shared "lock" screen for chest/rescue stages: shows the sleight-of-hand
+  // DC and lets the DM mark it picked (reveals contents) or failed (skips
+  // straight past, contents stay hidden). Both branches resolve the stage.
+  function lockScreenHTML(roomId, key, stageData, label){
+    return `
+      <div class="lock-screen">
+        <div class="lock-dc-label">Sleight of Hand — DC ${stageData.lockDC}</div>
+        <div class="stage-line stage-sub">${label}</div>
+        <div class="pz-btn-row">
+          <button class="pz-btn pz-btn-primary lock-pick-btn" data-room="${roomId}" data-key="${key}">Lock Picked</button>
+          <button class="pz-btn lock-fail-btn" data-room="${roomId}" data-key="${key}">Mark as Failed</button>
+        </div>
+      </div>
+    `;
   }
 
   function renderStageBlock(roomId, key, stageData, st){
@@ -3322,7 +3442,6 @@ window.Orchestrator = (function(){
     }
 
     if (key === 'rescue'){
-      const resolved = st.resolved.rescue;
       const hostileResolved = st.resolved.hostile;
       if (!hostileResolved){
         wrap.innerHTML = `
@@ -3331,29 +3450,69 @@ window.Orchestrator = (function(){
         `;
         return wrap;
       }
+
+      if (!stageData.lockPicked && !stageData.lockFailed){
+        wrap.innerHTML = `
+          <div class="stage-head">
+            <span class="stage-tag">Captive</span>
+            <span class="stage-status">Locked away</span>
+          </div>
+          ${lockScreenHTML(roomId, 'rescue', stageData, 'The captive is locked in — pick the lock to see who\'s inside.')}
+        `;
+        return wrap;
+      }
+
+      if (stageData.lockFailed){
+        wrap.innerHTML = `
+          <div class="stage-head">
+            <span class="stage-tag">Captive</span>
+            <span class="stage-status stage-status-danger">Lock not picked</span>
+          </div>
+          <div class="stage-line stage-sub">The attempt failed. The cell stays sealed for now.</div>
+        `;
+        return wrap;
+      }
+
+      const resolved = st.resolved.rescue && stageData.lockPicked;
       wrap.innerHTML = `
         <div class="stage-head">
           <span class="stage-tag">Captive</span>
-          ${resolved ? '<span class="stage-status stage-status-cleared">Rescued</span>' : '<span class="stage-status">Awaiting rescue</span>'}
+          <span class="stage-status stage-status-cleared">Unlocked</span>
         </div>
         ${npcCardHTML(stageData.npc, 'Rescuable NPC')}
-        ${!resolved ? `<button class="pz-btn pz-btn-primary stage-resolve-btn" data-room="${roomId}" data-key="rescue">Mark Rescued</button>` : ''}
       `;
       return wrap;
     }
 
     if (key === 'loot'){
-      const resolved = st.resolved.loot;
-      const parts = [];
-      if (stageData.item) parts.push(`<div class="stage-line">${stageData.item.name} <span class="stage-sub">(${window.MapGen.formatRarity(stageData.item.rarity)})</span></div>`);
-      if (stageData.chest) parts.push(`<div class="stage-line">${stageData.chest}</div>`);
+      if (!stageData.lockPicked && !stageData.lockFailed){
+        wrap.innerHTML = `
+          <div class="stage-head">
+            <span class="stage-tag stage-tag-gold">Loot</span>
+            <span class="stage-status">Locked</span>
+          </div>
+          ${lockScreenHTML(roomId, 'loot', stageData, 'The chest is locked — pick the lock to see what\'s inside.')}
+        `;
+        return wrap;
+      }
+
+      if (stageData.lockFailed){
+        wrap.innerHTML = `
+          <div class="stage-head">
+            <span class="stage-tag stage-tag-gold">Loot</span>
+            <span class="stage-status stage-status-danger">Lock not picked</span>
+          </div>
+          <div class="stage-line stage-sub">The attempt failed. The chest stays sealed for now.</div>
+        `;
+        return wrap;
+      }
+
       wrap.innerHTML = `
         <div class="stage-head">
           <span class="stage-tag stage-tag-gold">Loot</span>
-          ${resolved ? '<span class="stage-status stage-status-cleared">Claimed</span>' : '<span class="stage-status">Unclaimed</span>'}
+          <span class="stage-status stage-status-cleared">Unlocked</span>
         </div>
-        ${parts.join('')}
-        ${!resolved ? `<button class="pz-btn pz-btn-primary stage-resolve-btn" data-room="${roomId}" data-key="loot">Mark Claimed</button>` : ''}
+        ${chestContentsHTML(stageData.contents)}
       `;
       return wrap;
     }
@@ -3409,6 +3568,22 @@ window.Orchestrator = (function(){
     roomLogEl.querySelectorAll('.stage-resolve-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         window.Orchestrator.markResolved(btn.dataset.room, btn.dataset.key);
+        refreshRoomLog(roomId);
+        window.MapGen.redraw(window.Orchestrator.roomStatus);
+      });
+    });
+
+    roomLogEl.querySelectorAll('.lock-pick-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        window.Orchestrator.pickLock(btn.dataset.room, btn.dataset.key);
+        refreshRoomLog(roomId);
+        window.MapGen.redraw(window.Orchestrator.roomStatus);
+      });
+    });
+
+    roomLogEl.querySelectorAll('.lock-fail-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        window.Orchestrator.failLock(btn.dataset.room, btn.dataset.key);
         refreshRoomLog(roomId);
         window.MapGen.redraw(window.Orchestrator.roomStatus);
       });
